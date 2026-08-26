@@ -113,7 +113,7 @@ def do_install(chat_id, token, admin_id, domain):
         return
 
     send(chat_id, "📥 کلون کردن نسخه‌ی پایه...")
-    ok, out = run(["git", "clone", UPSTREAM_REPO, botdir])
+    ok, out = run(["git", "clone", UPSTREAM_REPO, botdir], timeout=300)
     if not ok:
         send(chat_id, f"❌ کلون شکست خورد:\n{out[-1500:]}")
         return
