@@ -113,9 +113,16 @@ def do_install(chat_id, token, admin_id, domain):
         return
 
     send(chat_id, "📥 کلون کردن نسخه‌ی پایه...")
-    ok, out = run(["git", "clone", UPSTREAM_REPO, botdir], timeout=300)
+    ok = False
+    out = ""
+    for attempt in range(1, 4):
+        run(["rm", "-rf", botdir])
+        ok, out = run(["git", "clone", "--depth", "1", UPSTREAM_REPO, botdir], timeout=90)
+        if ok:
+            break
+        send(chat_id, f"⚠️ تلاش {attempt}/3 برای کلون شکست خورد، دوباره امتحان می‌کنم...")
     if not ok:
-        send(chat_id, f"❌ کلون شکست خورد:\n{out[-1500:]}")
+        send(chat_id, f"❌ کلون بعد از 3 تلاش شکست خورد:\n{out[-1500:]}")
         return
 
     send(chat_id, "🧩 اعمال کد تست‌شده‌ی Nexra...")
