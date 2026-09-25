@@ -44,7 +44,7 @@ MENU = {
         [{"text": "📋 لیست بات‌ها"}, {"text": "➕ نصب بات جدید"}],
         [{"text": "🩺 بررسی سلامت"}, {"text": "🔧 تعمیر دیتابیس"}],
         [{"text": "♻️ بروزرسانی کد بات‌ها"}, {"text": "💾 بکاپ فوری"}],
-        [{"text": "🖥 وضعیت سرور"}],
+        [{"text": "🖥 وضعیت سرور"}, {"text": "⬆️ بروزرسانی نصب‌کننده"}],
     ],
     "resize_keyboard": True,
 }
@@ -151,26 +151,58 @@ def webhook_ok(token):
         info = body.get("result", {})
         url = info.get("url") or ""
         errors = info.get("last_error_message")
+        when = info.get("last_error_date") or 0
         pending = info.get("pending_update_count", 0)
         if not url:
             return "❌ webhook تنظیم نشده"
-        if errors:
-            return f"⚠️ {errors[:60]}"
+        age_min = int((time.time() - when) / 60) if when else None
+        if errors and age_min is not None and age_min < 10:
+            return f"❌ {errors[:50]} ({age_min} دقیقه پیش)"
         if pending > 20:
             return f"⚠️ {pending} آپدیت معطل"
+        if errors:
+            return f"✅ سالم (آخرین خطا {age_min} دقیقه پیش، الان برطرف است)"
         return "✅ سالم"
     except Exception as e:
         return f"❌ {str(e)[:60]}"
 
 
+NEXRA_COLUMNS = (
+    ("marzban_url_direct", "VARCHAR(500) NULL"),
+    ("marzban_username_direct", "VARCHAR(200) NULL"),
+    ("marzban_password_direct", "VARCHAR(200) NULL"),
+)
+
+
 def db_ok(dbname):
-    ok, out = run(["mysql", dbname, "-N", "-e",
-                   "SHOW COLUMNS FROM marzban_panel LIKE 'marzban_url_direct';"])
-    if not ok:
-        return False, "دیتابیس در دسترس نیست"
-    if "marzban_url_direct" not in out:
-        return False, "ستون‌های Nexra وجود ندارد"
+    for name, _ in NEXRA_COLUMNS:
+        ok, out = run(["mysql", dbname, "-N", "-e",
+                       f"SHOW COLUMNS FROM marzban_panel LIKE '{name}';"])
+        if not ok:
+            return False, "دیتابیس در دسترس نیست"
+        if name not in out:
+            return False, "ستون‌های Nexra وجود ندارد"
     return True, "ok"
+
+
+def ensure_columns(dbname):
+    """Add the Nexra columns straight over SQL - no dependency on table.php."""
+    added = []
+    for name, coltype in NEXRA_COLUMNS:
+        ok, out = run(["mysql", dbname, "-N", "-e",
+                       f"SHOW COLUMNS FROM marzban_panel LIKE '{name}';"])
+        if not ok:
+            return False, f"دیتابیس در دسترس نیست: {out.strip()[:70]}"
+        if name in out:
+            continue
+        ok, out = run(["mysql", dbname, "-e",
+                       f"ALTER TABLE marzban_panel ADD {name} {coltype};"])
+        if not ok:
+            return False, f"{name}: {out.strip()[:70]}"
+        added.append(name)
+    if added:
+        return True, "ساخته شد: " + ", ".join(added)
+    return True, "از قبل سالم بود"
 
 
 # ---------------------------------------------------------------- actions
@@ -240,30 +272,57 @@ def cmd_health(chat_id):
 
 
 def cmd_repair(chat_id):
-    """Re-run table.php on every bot so schema migrations get applied."""
+    """Add the missing columns over SQL, then run table.php for the rest."""
     bots = list_bots()
     if not bots:
         send(chat_id, "هیچ باتی پیدا نشد.")
         return
-    send(chat_id, "🔧 در حال اجرای مهاجرت دیتابیس روی همه‌ی بات‌ها...", menu=False)
+    send(chat_id, "🔧 در حال تعمیر دیتابیس همه‌ی بات‌ها...", menu=False)
     lines = []
     for b in bots:
         cfg = read_config(b["config"])
+        dbname = cfg.get("dbname")
         domain = cfg.get("domain")
-        if not domain:
-            lines.append(f"#{b['n']}: ❌ دامنه خوانده نشد")
+        if not dbname:
+            lines.append(f"#{b['n']}: ❌ نام دیتابیس خوانده نشد")
             continue
-        try:
-            urllib.request.urlopen(f"https://{domain}/table.php", timeout=60).read()
-        except Exception as e:
-            lines.append(f"#{b['n']}: ⚠️ {str(e)[:60]}")
-            continue
-        if cfg.get("dbname"):
-            good, why = db_ok(cfg["dbname"])
-            lines.append(f"#{b['n']}: " + ("✅ درست شد" if good else f"❌ {why}"))
-        else:
-            lines.append(f"#{b['n']}: ✅ اجرا شد")
+
+        good, why = ensure_columns(dbname)
+        lines.append(f"#{b['n']}: " + ("✅ " if good else "❌ ") + why)
+
+        if domain:  # table.php also creates anything else that is missing
+            try:
+                urllib.request.urlopen(f"https://{domain}/table.php", timeout=60).read()
+            except Exception as e:
+                lines.append(f"    ⚠️ table.php: {str(e)[:50]}")
     send(chat_id, "🔧 <b>تعمیر دیتابیس</b>\n\n" + "\n".join(lines))
+
+
+def cmd_self_update(chat_id):
+    """Fetch the newest installer code and restart the service."""
+    send(chat_id, "⬆️ در حال گرفتن آخرین نسخه‌ی خودم...", menu=False)
+    url = ("https://raw.githubusercontent.com/MHBehzadian/"
+           "nexra-installer/main/bot.py")
+    tmp = "/root/nexra-installer/bot.py.new"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r:
+            data = r.read().decode()
+    except Exception as e:
+        send(chat_id, f"❌ دانلود نشد: {e}")
+        return
+    if "__main__" not in data or len(data) < 5000:
+        send(chat_id, "❌ فایل ناقص دانلود شد، دوباره امتحان کن.")
+        return
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(data)
+    ok, out = run(["python3", "-c",
+                   f"import ast;ast.parse(open('{tmp}',encoding='utf-8').read())"])
+    if not ok:
+        send(chat_id, f"❌ فایل سالم نیست:\n<code>{out[-300:]}</code>")
+        return
+    os.replace(tmp, "/root/nexra-installer/bot.py")
+    send(chat_id, "✅ بروز شد، دارم ری‌استارت می‌شوم...", menu=False)
+    run_shell("systemctl restart nexra-installer &")
 
 
 def cmd_update_code(chat_id):
@@ -335,15 +394,31 @@ def cmd_server(chat_id):
     _, php = run_shell("systemctl is-active php8.1-fpm")
     _, ngx = run_shell("systemctl is-active nginx")
     _, sql = run_shell("systemctl is-active mariadb || systemctl is-active mysql")
+    _, workers = run_shell("pgrep -c -f 'php-fpm: pool' || echo 0")
+    _, maxch = run_shell(
+        "grep -h '^pm.max_children' /etc/php/8.1/fpm/pool.d/*.conf | head -1")
+    _, reached = run_shell(
+        "grep -c 'max_children' /var/log/php8.1-fpm.log 2>/dev/null || echo 0")
+    _, gw = run_shell(
+        "grep -c '502\\|upstream' /var/log/nginx/error.log 2>/dev/null || echo 0")
+
+    note = ""
+    if reached.strip() not in ("0", ""):
+        note = ("\n\n⚠️ php-fpm به سقف تعداد پروسه خورده است؛ همین باعث "
+                "خطای 502 می‌شود. با بالا بردن <code>pm.max_children</code> "
+                "در <code>/etc/php/8.1/fpm/pool.d/www.conf</code> حل می‌شود.")
+
     send(chat_id,
          "🖥 <b>وضعیت سرور</b>\n\n"
          f"⏱ {up.strip()}\n"
          f"💽 <code>{disk.strip()}</code>\n"
          f"🧠 <code>{mem.strip()}</code>\n\n"
          f"nginx: {ngx.strip()}\n"
-         f"php-fpm: {php.strip()}\n"
+         f"php-fpm: {php.strip()} ({workers.strip()} پروسه، {maxch.strip() or 'max_children ?'})\n"
          f"database: {sql.strip()}\n"
-         f"تعداد بات‌ها: {len(list_bots())}")
+         f"تعداد بات‌ها: {len(list_bots())}\n\n"
+         f"خطاهای max_children در لاگ: {reached.strip()}\n"
+         f"خطاهای 502/upstream در nginx: {gw.strip()}" + note)
 
 
 def send_document(chat_id, path, caption=""):
@@ -596,6 +671,8 @@ def handle_message(msg):
         cmd_backup(chat_id)
     elif text in ("🖥 وضعیت سرور", "/server"):
         cmd_server(chat_id)
+    elif text in ("⬆️ بروزرسانی نصب‌کننده", "/selfupdate"):
+        cmd_self_update(chat_id)
     else:
         send(chat_id, "از منوی پایین یکی رو انتخاب کن.")
 
