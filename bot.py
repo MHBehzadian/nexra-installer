@@ -64,6 +64,7 @@ MENU = {
         [{"text": "📋 لیست بات‌ها"}, {"text": "➕ نصب بات جدید"}],
         [{"text": "🩺 بررسی سلامت"}, {"text": "🔧 تعمیر دیتابیس"}],
         [{"text": "♻️ بروزرسانی کد بات‌ها"}, {"text": "💾 بکاپ فوری"}],
+        [{"text": "🔁 تغییر آدرس پنل Nexra"}],
         [{"text": "🖥 وضعیت سرور"}, {"text": "⬆️ بروزرسانی نصب‌کننده"}],
     ],
     "resize_keyboard": True,
@@ -316,6 +317,54 @@ def cmd_repair(chat_id):
             except Exception as e:
                 lines.append(f"    ⚠️ table.php: {str(e)[:50]}")
     send(chat_id, "🔧 <b>تعمیر دیتابیس</b>\n\n" + "\n".join(lines))
+
+
+DEFAULT_NEXRA_URL = "https://weare.nexradns.site/dashboard"
+URL_RE = re.compile(r"^https?://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+$")
+
+
+def cmd_ask_nexra_url(chat_id):
+    sessions[chat_id] = {"step": "nexraurl", "data": {}}
+    send(chat_id,
+         "🔁 آدرس جدید پنل Nexra را بفرست؛ روی <b>همه‌ی</b> پنل‌های Nexra در "
+         "همه‌ی بات‌های این سرور اعمال می‌شود.\n\n"
+         "برای آدرس پیش‌فرض فقط عدد <b>1</b> را بفرست:\n"
+         f"<code>{DEFAULT_NEXRA_URL}</code>\n\n"
+         "برای انصراف /cancel", menu=False)
+
+
+def apply_nexra_url(chat_id, url):
+    url = url.rstrip("/")
+    bots = list_bots()
+    if not bots:
+        send(chat_id, "هیچ باتی پیدا نشد.")
+        return
+    send(chat_id, f"🔁 در حال تغییر آدرس به <code>{url}</code> ...", menu=False)
+    lines = []
+    total = 0
+    for b in bots:
+        cfg = read_config(b["config"])
+        dbname = cfg.get("dbname")
+        if not dbname:
+            continue
+        ok, out = run(["mysql", dbname, "-N", "-e",
+                       "SELECT COUNT(*) FROM marzban_panel WHERE type='nexra';"])
+        count = out.strip() if ok else "?"
+        if count in ("0", "?", ""):
+            lines.append(f"#{b['n']}: — پنل Nexra ندارد")
+            continue
+        # datelogin holds the cached login token of the old address, so it has
+        # to go with it or the panel keeps talking to the old host.
+        ok, out = run(["mysql", dbname, "-e",
+                       "UPDATE marzban_panel SET url_panel='" + url +
+                       "', datelogin=NULL WHERE type='nexra';"])
+        if ok:
+            total += int(count)
+            lines.append(f"#{b['n']}: ✅ {count} پنل تغییر کرد")
+        else:
+            lines.append(f"#{b['n']}: ❌ {out.strip()[:70]}")
+    send(chat_id, "🔁 <b>تغییر آدرس پنل Nexra</b>\n\n" + "\n".join(lines) +
+         f"\n\nمجموع: {total} پنل روی <code>{url}</code>")
 
 
 def cmd_self_update(chat_id):
@@ -681,6 +730,15 @@ def handle_message(msg):
             send(chat_id, f"🌐 دامنه‌ی این بات رو بفرست (DNS باید از قبل به IP سرور "
                           f"اشاره کنه، مثلاً bot{n}.example.com):", menu=False)
             return
+        if step == "nexraurl":
+            new_url = DEFAULT_NEXRA_URL if text == "1" else text
+            if not URL_RE.match(new_url) or "'" in new_url:
+                send(chat_id, "❌ آدرس معتبر نیست. با https:// شروع شود. دوباره بفرست "
+                              "(یا /cancel):", menu=False)
+                return
+            sessions.pop(chat_id, None)
+            apply_nexra_url(chat_id, new_url)
+            return
         if step == "domain":
             if not DOMAIN_RE.match(text):
                 send(chat_id, "❌ دامنه‌ی معتبر نیست. دوباره بفرست:", menu=False)
@@ -705,6 +763,8 @@ def handle_message(msg):
         cmd_backup(chat_id)
     elif text in ("🖥 وضعیت سرور", "/server"):
         cmd_server(chat_id)
+    elif text in ("🔁 تغییر آدرس پنل Nexra", "/nexraurl"):
+        cmd_ask_nexra_url(chat_id)
     elif text in ("⬆️ بروزرسانی نصب‌کننده", "/selfupdate"):
         cmd_self_update(chat_id)
     else:
