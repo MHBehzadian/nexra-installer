@@ -39,6 +39,26 @@ API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 sessions = {}  # chat_id -> dict(step=..., data={...})
 
+OFFSET_FILE = "/root/nexra-installer/offset"
+OFFSET = None
+
+
+def load_offset():
+    global OFFSET
+    try:
+        with open(OFFSET_FILE) as fh:
+            OFFSET = int(fh.read().strip())
+    except Exception:
+        OFFSET = None
+
+
+def save_offset():
+    try:
+        with open(OFFSET_FILE, "w") as fh:
+            fh.write(str(OFFSET))
+    except Exception as e:
+        print("could not save offset:", e)
+
 MENU = {
     "keyboard": [
         [{"text": "📋 لیست بات‌ها"}, {"text": "➕ نصب بات جدید"}],
@@ -320,7 +340,21 @@ def cmd_self_update(chat_id):
     if not ok:
         send(chat_id, f"❌ فایل سالم نیست:\n<code>{out[-300:]}</code>")
         return
+    if data == open("/root/nexra-installer/bot.py", encoding="utf-8").read():
+        send(chat_id, "✅ همین الان هم آخرین نسخه است، کاری لازم نیست.")
+        return
     os.replace(tmp, "/root/nexra-installer/bot.py")
+
+    # Confirm the button press to Telegram BEFORE restarting, otherwise the
+    # same update is delivered again to the new process and it updates for ever.
+    global OFFSET
+    if OFFSET is not None:
+        save_offset()
+        try:
+            api_call("getUpdates", {"offset": OFFSET, "timeout": 0}, timeout=20)
+        except Exception:
+            pass
+
     send(chat_id, "✅ بروز شد، دارم ری‌استارت می‌شوم...", menu=False)
     run_shell("systemctl restart nexra-installer &")
 
@@ -682,21 +716,32 @@ def main():
         print("Set INSTALLER_BOT_TOKEN first.")
         return
     print("nexra-installer bot running...")
+    load_offset()
     try:
         api_call("deleteWebhook", {"drop_pending_updates": "false"})
     except Exception:
         pass
-    offset = None
+    global OFFSET
+    started = time.time()
     while True:
         try:
             params = {"timeout": 30}
-            if offset is not None:
-                params["offset"] = offset
+            if OFFSET is not None:
+                params["offset"] = OFFSET
             resp = api_call("getUpdates", params, timeout=40)
             for update in resp.get("result", []):
-                offset = update["update_id"] + 1
-                if "message" in update:
-                    handle_message(update["message"])
+                OFFSET = update["update_id"] + 1
+                save_offset()
+                msg = update.get("message")
+                if not msg:
+                    continue
+                # A message sent before this process started is a leftover from
+                # a restart - acting on it again is how the self-update button
+                # used to loop for ever.
+                if msg.get("date", 0) < started - 30:
+                    print("skipping stale update", update["update_id"])
+                    continue
+                handle_message(msg)
         except Exception as e:
             print("poll error:", e)
             time.sleep(3)
