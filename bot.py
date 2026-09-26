@@ -64,7 +64,7 @@ MENU = {
         [{"text": "📋 لیست بات‌ها"}, {"text": "➕ نصب بات جدید"}],
         [{"text": "🩺 بررسی سلامت"}, {"text": "🔧 تعمیر دیتابیس"}],
         [{"text": "♻️ بروزرسانی کد بات‌ها"}, {"text": "💾 بکاپ فوری"}],
-        [{"text": "🔁 تغییر آدرس پنل Nexra"}],
+        [{"text": "🔁 تغییر آدرس پنل Nexra"}, {"text": "🛒 محصولات پنل"}],
         [{"text": "🖥 وضعیت سرور"}, {"text": "⬆️ بروزرسانی نصب‌کننده"}],
     ],
     "resize_keyboard": True,
@@ -365,6 +365,77 @@ def apply_nexra_url(chat_id, url):
             lines.append(f"#{b['n']}: ❌ {out.strip()[:70]}")
     send(chat_id, "🔁 <b>تغییر آدرس پنل Nexra</b>\n\n" + "\n".join(lines) +
          f"\n\nمجموع: {total} پنل روی <code>{url}</code>")
+
+
+def cmd_products(chat_id):
+    """Show where each bot's products live, then offer to fix it."""
+    bots = list_bots()
+    if not bots:
+        send(chat_id, "هیچ باتی پیدا نشد.")
+        return
+    send(chat_id, "🔎 در حال خواندن محصولات...", menu=False)
+    lines = []
+    for b in bots:
+        cfg = read_config(b["config"])
+        dbname = cfg.get("dbname")
+        if not dbname:
+            continue
+        _, panels = run(["mysql", dbname, "-N", "-e",
+                         "SELECT CONCAT(name_panel, ' [', type, ']') FROM marzban_panel;"])
+        _, locs = run(["mysql", dbname, "-N", "-e",
+                       "SELECT CONCAT(IFNULL(Location, '-'), ' = ', COUNT(*)) "
+                       "FROM product GROUP BY Location;"])
+        _, cats = run(["mysql", dbname, "-N", "-e", "SELECT COUNT(*) FROM category;"])
+        panel_list = [x for x in panels.strip().splitlines() if x]
+        loc_list = [x for x in locs.strip().splitlines() if x]
+        lines.append(
+            f"<b>#{b['n']}</b>\n"
+            f"  پنل‌ها: {', '.join(panel_list) or '—'}\n"
+            f"  محصولات: {' | '.join(loc_list) or '—'}\n"
+            f"  دسته‌بندی‌ها: {cats.strip() or '0'}")
+    sessions[chat_id] = {"step": "productloc", "data": {}}
+    send(chat_id,
+         "🛒 <b>محصولات هر بات</b>\n\n" + "\n\n".join(lines) +
+         "\n\nهر محصول فقط زیر پنلی دیده می‌شود که نامش در ستون Location آن محصول باشد، "
+         "و دسته‌بندی‌ها هم فقط وقتی نشان داده می‌شوند که حداقل یک محصول قابل نمایش داشته باشند. "
+         "پس با اضافه‌کردن پنل Nexra، محصولات قدیمی هنوز به نام پنل قبلی گره خورده‌اند.\n\n"
+         "<b>1</b> = محصولات در همه‌ی پنل‌ها دیده شوند (Location = /all)\n"
+         "<b>2</b> = همه‌ی محصولات به پنل Nexra منتقل شوند\n\n"
+         "برای انصراف /cancel", menu=False)
+
+
+def apply_product_location(chat_id, mode):
+    lines = []
+    for b in list_bots():
+        cfg = read_config(b["config"])
+        dbname = cfg.get("dbname")
+        if not dbname:
+            continue
+        _, total = run(["mysql", dbname, "-N", "-e", "SELECT COUNT(*) FROM product;"])
+        total = total.strip()
+        if total in ("0", "", "?"):
+            lines.append(f"#{b['n']}: — محصولی ندارد")
+            continue
+        if mode == "1":
+            target = "/all"
+        else:
+            _, name = run(["mysql", dbname, "-N", "-e",
+                           "SELECT name_panel FROM marzban_panel WHERE type='nexra' LIMIT 1;"])
+            target = name.strip()
+            if not target:
+                lines.append(f"#{b['n']}: — پنل Nexra ندارد")
+                continue
+            if "'" in target or chr(92) in target:
+                lines.append(f"#{b['n']}: ❌ نام پنل کاراکتر غیرمجاز دارد")
+                continue
+        ok, out = run(["mysql", dbname, "-e",
+                       "UPDATE product SET Location='" + target + "';"])
+        if ok:
+            lines.append(f"#{b['n']}: ✅ {total} محصول ← {target}")
+        else:
+            lines.append(f"#{b['n']}: ❌ {out.strip()[:70]}")
+    send(chat_id, "🛒 <b>محل نمایش محصولات</b>\n\n" + "\n".join(lines) +
+         "\n\nدسته‌بندی‌ها خودبه‌خود برمی‌گردند، چون همان محصولات را دنبال می‌کنند.")
 
 
 def cmd_self_update(chat_id):
@@ -730,6 +801,13 @@ def handle_message(msg):
             send(chat_id, f"🌐 دامنه‌ی این بات رو بفرست (DNS باید از قبل به IP سرور "
                           f"اشاره کنه، مثلاً bot{n}.example.com):", menu=False)
             return
+        if step == "productloc":
+            if text not in ("1", "2"):
+                send(chat_id, "فقط 1 یا 2 را بفرست (یا /cancel):", menu=False)
+                return
+            sessions.pop(chat_id, None)
+            apply_product_location(chat_id, text)
+            return
         if step == "nexraurl":
             new_url = DEFAULT_NEXRA_URL if text == "1" else text
             if not URL_RE.match(new_url) or "'" in new_url:
@@ -763,6 +841,8 @@ def handle_message(msg):
         cmd_backup(chat_id)
     elif text in ("🖥 وضعیت سرور", "/server"):
         cmd_server(chat_id)
+    elif text in ("🛒 محصولات پنل", "/products"):
+        cmd_products(chat_id)
     elif text in ("🔁 تغییر آدرس پنل Nexra", "/nexraurl"):
         cmd_ask_nexra_url(chat_id)
     elif text in ("⬆️ بروزرسانی نصب‌کننده", "/selfupdate"):
