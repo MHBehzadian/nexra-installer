@@ -197,7 +197,7 @@ NEXRA_COLUMNS = (
 
 def db_ok(dbname):
     for name, _ in NEXRA_COLUMNS:
-        ok, out = run(["mysql", dbname, "-N", "-e",
+        ok, out = run(["mysql", "--default-character-set=utf8mb4", dbname, "-N", "-e",
                        f"SHOW COLUMNS FROM marzban_panel LIKE '{name}';"])
         if not ok:
             return False, "دیتابیس در دسترس نیست"
@@ -210,13 +210,13 @@ def ensure_columns(dbname):
     """Add the Nexra columns straight over SQL - no dependency on table.php."""
     added = []
     for name, coltype in NEXRA_COLUMNS:
-        ok, out = run(["mysql", dbname, "-N", "-e",
+        ok, out = run(["mysql", "--default-character-set=utf8mb4", dbname, "-N", "-e",
                        f"SHOW COLUMNS FROM marzban_panel LIKE '{name}';"])
         if not ok:
             return False, f"دیتابیس در دسترس نیست: {out.strip()[:70]}"
         if name in out:
             continue
-        ok, out = run(["mysql", dbname, "-e",
+        ok, out = run(["mysql", "--default-character-set=utf8mb4", dbname, "-e",
                        f"ALTER TABLE marzban_panel ADD {name} {coltype};"])
         if not ok:
             return False, f"{name}: {out.strip()[:70]}"
@@ -347,7 +347,7 @@ def apply_nexra_url(chat_id, url):
         dbname = cfg.get("dbname")
         if not dbname:
             continue
-        ok, out = run(["mysql", dbname, "-N", "-e",
+        ok, out = run(["mysql", "--default-character-set=utf8mb4", dbname, "-N", "-e",
                        "SELECT COUNT(*) FROM marzban_panel WHERE type='nexra';"])
         count = out.strip() if ok else "?"
         if count in ("0", "?", ""):
@@ -355,7 +355,7 @@ def apply_nexra_url(chat_id, url):
             continue
         # datelogin holds the cached login token of the old address, so it has
         # to go with it or the panel keeps talking to the old host.
-        ok, out = run(["mysql", dbname, "-e",
+        ok, out = run(["mysql", "--default-character-set=utf8mb4", dbname, "-e",
                        "UPDATE marzban_panel SET url_panel='" + url +
                        "', datelogin=NULL WHERE type='nexra';"])
         if ok:
@@ -380,12 +380,12 @@ def cmd_products(chat_id):
         dbname = cfg.get("dbname")
         if not dbname:
             continue
-        _, panels = run(["mysql", dbname, "-N", "-e",
+        _, panels = run(["mysql", "--default-character-set=utf8mb4", dbname, "-N", "-e",
                          "SELECT CONCAT(name_panel, ' [', type, ']') FROM marzban_panel;"])
-        _, locs = run(["mysql", dbname, "-N", "-e",
+        _, locs = run(["mysql", "--default-character-set=utf8mb4", dbname, "-N", "-e",
                        "SELECT CONCAT(IFNULL(Location, '-'), ' = ', COUNT(*)) "
                        "FROM product GROUP BY Location;"])
-        _, cats = run(["mysql", dbname, "-N", "-e", "SELECT COUNT(*) FROM category;"])
+        _, cats = run(["mysql", "--default-character-set=utf8mb4", dbname, "-N", "-e", "SELECT COUNT(*) FROM category;"])
         panel_list = [x for x in panels.strip().splitlines() if x]
         loc_list = [x for x in locs.strip().splitlines() if x]
         lines.append(
@@ -414,25 +414,29 @@ def apply_product_location(chat_id, mode, only_n=0):
         dbname = cfg.get("dbname")
         if not dbname:
             continue
-        _, total = run(["mysql", dbname, "-N", "-e", "SELECT COUNT(*) FROM product;"])
+        _, total = run(["mysql", "--default-character-set=utf8mb4", dbname, "-N", "-e", "SELECT COUNT(*) FROM product;"])
         total = total.strip()
         if total in ("0", "", "?"):
             lines.append(f"#{b['n']}: — محصولی ندارد")
             continue
         if mode == "1":
             target = "/all"
+            sql = "UPDATE product SET Location='/all';"
         else:
-            _, name = run(["mysql", dbname, "-N", "-e",
-                           "SELECT name_panel FROM marzban_panel WHERE type='nexra' LIMIT 1;"])
-            target = name.strip()
-            if not target:
+            _, has = run(["mysql", "--default-character-set=utf8mb4", dbname, "-N", "-e",
+                          "SELECT COUNT(*) FROM marzban_panel WHERE type='nexra';"])
+            if has.strip() in ("0", "", "?"):
                 lines.append(f"#{b['n']}: — پنل Nexra ندارد")
                 continue
-            if "'" in target or chr(92) in target:
-                lines.append(f"#{b['n']}: ❌ نام پنل کاراکتر غیرمجاز دارد")
-                continue
-        ok, out = run(["mysql", dbname, "-e",
-                       "UPDATE product SET Location='" + target + "';"])
+            _, name = run(["mysql", "--default-character-set=utf8mb4", dbname, "-N", "-e",
+                           "SELECT name_panel FROM marzban_panel WHERE type='nexra' LIMIT 1;"])
+            target = name.strip() or "panel nexra"
+            # The name is copied inside SQL, never through this shell: a panel
+            # name holding an emoji came back as a literal '?' that way and then
+            # matched nothing.
+            sql = ("UPDATE product SET Location = "
+                   "(SELECT name_panel FROM marzban_panel WHERE type='nexra' LIMIT 1);")
+        ok, out = run(["mysql", "--default-character-set=utf8mb4", dbname, "-e", sql])
         if ok:
             lines.append(f"#{b['n']}: ✅ {total} محصول ← {target}")
         else:
