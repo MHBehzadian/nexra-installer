@@ -393,20 +393,23 @@ def cmd_products(chat_id):
             f"  پنل‌ها: {', '.join(panel_list) or '—'}\n"
             f"  محصولات: {' | '.join(loc_list) or '—'}\n"
             f"  دسته‌بندی‌ها: {cats.strip() or '0'}")
-    sessions[chat_id] = {"step": "productloc", "data": {}}
+    numbers = ", ".join(str(b["n"]) for b in bots)
+    sessions[chat_id] = {"step": "productbot", "data": {}}
     send(chat_id,
          "🛒 <b>محصولات هر بات</b>\n\n" + "\n\n".join(lines) +
          "\n\nهر محصول فقط زیر پنلی دیده می‌شود که نامش در ستون Location آن محصول باشد، "
          "و دسته‌بندی‌ها هم فقط وقتی نشان داده می‌شوند که حداقل یک محصول قابل نمایش داشته باشند. "
          "پس با اضافه‌کردن پنل Nexra، محصولات قدیمی هنوز به نام پنل قبلی گره خورده‌اند.\n\n"
-         "<b>1</b> = محصولات در همه‌ی پنل‌ها دیده شوند (Location = /all)\n"
-         "<b>2</b> = همه‌ی محصولات به پنل Nexra منتقل شوند\n\n"
+         f"کدام بات؟ شماره‌اش را بفرست ({numbers})\n"
+         "برای همه‌ی بات‌ها عدد <b>0</b> را بفرست.\n\n"
          "برای انصراف /cancel", menu=False)
 
 
-def apply_product_location(chat_id, mode):
+def apply_product_location(chat_id, mode, only_n=0):
     lines = []
     for b in list_bots():
+        if only_n and b["n"] != only_n:
+            continue
         cfg = read_config(b["config"])
         dbname = cfg.get("dbname")
         if not dbname:
@@ -434,6 +437,8 @@ def apply_product_location(chat_id, mode):
             lines.append(f"#{b['n']}: ✅ {total} محصول ← {target}")
         else:
             lines.append(f"#{b['n']}: ❌ {out.strip()[:70]}")
+    if not lines:
+        lines = ["باتی با این شماره پیدا نشد."]
     send(chat_id, "🛒 <b>محل نمایش محصولات</b>\n\n" + "\n".join(lines) +
          "\n\nدسته‌بندی‌ها خودبه‌خود برمی‌گردند، چون همان محصولات را دنبال می‌کنند.")
 
@@ -801,12 +806,32 @@ def handle_message(msg):
             send(chat_id, f"🌐 دامنه‌ی این بات رو بفرست (DNS باید از قبل به IP سرور "
                           f"اشاره کنه، مثلاً bot{n}.example.com):", menu=False)
             return
+        if step == "productbot":
+            if not text.isdigit():
+                send(chat_id, "شماره‌ی بات را بفرست، یا 0 برای همه (یا /cancel):",
+                     menu=False)
+                return
+            chosen = int(text)
+            if chosen and chosen not in [b["n"] for b in list_bots()]:
+                send(chat_id, "باتی با این شماره نداریم. دوباره بفرست (یا /cancel):",
+                     menu=False)
+                return
+            sess["data"]["n"] = chosen
+            sess["step"] = "productloc"
+            where = "همه‌ی بات‌ها" if chosen == 0 else f"بات #{chosen}"
+            send(chat_id,
+                 f"روی <b>{where}</b> چه کاری انجام شود؟\n\n"
+                 "<b>1</b> = محصولات در همه‌ی پنل‌ها دیده شوند (Location = /all)\n"
+                 "<b>2</b> = همه‌ی محصولات به پنل Nexra منتقل شوند\n\n"
+                 "برای انصراف /cancel", menu=False)
+            return
         if step == "productloc":
             if text not in ("1", "2"):
                 send(chat_id, "فقط 1 یا 2 را بفرست (یا /cancel):", menu=False)
                 return
+            chosen = sess["data"].get("n", 0)
             sessions.pop(chat_id, None)
-            apply_product_location(chat_id, text)
+            apply_product_location(chat_id, text, chosen)
             return
         if step == "nexraurl":
             new_url = DEFAULT_NEXRA_URL if text == "1" else text
