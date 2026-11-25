@@ -1,5 +1,12 @@
 # nexra-installer
 
+> **این ربات حالا داخل ربات تاپ‌آپ Nexra است.** همه‌ی کارهایش (و ساخت ربات بدون دامنه، فقط با IP) در
+> [nexra-topup-bot](https://github.com/MHBehzadian/nexra-topup-bot) ← «🤖 ربات‌های فروش» انجام می‌شود، روی هر تعداد سرور.
+> بعد از راه‌انداختن آن، این سرویس را خاموش کنید: `systemctl disable --now nexra-installer`
+>
+> This bot now lives inside the Nexra top-up bot (🤖 ربات‌های فروش). It installs the Go
+> rewrite of the sales bot, with no domain needed. This repository stays for reference.
+
 Admin-only Telegram bot that manages every botmirzapanel instance on one
 server. It talks to you through a keyboard menu:
 
